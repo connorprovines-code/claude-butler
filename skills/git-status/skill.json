@@ -1,0 +1,8 @@
+{
+  "name": "git-status",
+  "description": "Check git status across your projects",
+  "triggers": ["git status", "repo status", "what's uncommitted", "any changes"],
+  "prompt_template": "The user wants to check the git status of their projects. Their request: {{message}}\n\nRun `git status` in the current directory. If there are uncommitted changes, summarize them clearly. Show branch name, modified files count, and any untracked files.",
+  "model": "haiku",
+  "max_turns": 5
+}

@@ -1,0 +1,8 @@
+{
+  "name": "deploy",
+  "description": "Deploy a project to Vercel or run a build",
+  "triggers": ["deploy", "push to production", "ship it", "vercel deploy", "build and deploy"],
+  "prompt_template": "The user wants to deploy a project. Their request: {{message}}\n\nIdentify which project they want to deploy. Run the appropriate build and deploy commands. Report success or failure with the deployment URL.",
+  "model": "opus",
+  "max_turns": 30
+}

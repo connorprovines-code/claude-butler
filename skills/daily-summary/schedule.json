@@ -1,0 +1,5 @@
+{
+  "cron": "0 9 * * 1-5",
+  "description": "Morning briefing at 9am on weekdays",
+  "prompt": "Give me my daily morning briefing. Check git status across my projects, summarize any pending work, and highlight anything that needs attention today."
+}

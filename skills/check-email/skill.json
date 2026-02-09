@@ -1,0 +1,8 @@
+{
+  "name": "check-email",
+  "description": "Check and summarize recent emails",
+  "triggers": ["check email", "check my email", "any emails", "inbox", "read email", "email summary"],
+  "prompt_template": "The user wants to check their email. Their request: {{message}}\n\nUse the available tools to check the user's email inbox. Summarize the most recent/important emails concisely. Group by sender or topic if helpful. Highlight anything that needs urgent attention.",
+  "model": "haiku",
+  "max_turns": 10
+}

@@ -1,0 +1,8 @@
+{
+  "name": "quick-task",
+  "description": "Quick coding task or file operation",
+  "triggers": ["create a file", "write a script", "make a function", "quick script", "one-liner"],
+  "prompt_template": "The user wants a quick coding task done. Their request: {{message}}\n\nComplete the task efficiently. Write files as needed. Keep it minimal and focused.",
+  "model": "sonnet",
+  "max_turns": 15
+}

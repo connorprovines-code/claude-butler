@@ -1,0 +1,24 @@
+{
+  "name": "claude-butler",
+  "version": "1.0.0",
+  "description": "Personal AI butler - text commands to spawn Claude agents via SMS/Telegram",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "setup": "node setup.js",
+    "dev": "node --watch src/index.js"
+  },
+  "keywords": ["claude", "ai", "butler", "telegram", "agent", "automation"],
+  "license": "MIT",
+  "dependencies": {
+    "node-telegram-bot-api": "^0.66.0",
+    "node-cron": "^3.0.3",
+    "dotenv": "^16.4.7",
+    "winston": "^3.17.0",
+    "p-queue": "^8.0.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "cron": "0 9 * * *",
+  "description": "Runs every day at 9am",
+  "prompt": "Check my todo list and give me a summary of what needs to be done today."
+}

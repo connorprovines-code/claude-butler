@@ -1,0 +1,9 @@
+{
+  "name": "my-skill",
+  "description": "What this skill does",
+  "triggers": ["keyword1", "keyword2"],
+  "prompt_template": "Do the following task based on the user's request: {{message}}",
+  "cwd": null,
+  "max_turns": 25,
+  "model": null
+}
