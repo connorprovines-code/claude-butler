@@ -31,6 +31,10 @@ const config = {
     defaultCwd: process.env.DEFAULT_CWD || path.join(__dirname, '..')
   },
 
+  sessions: {
+    ttlMinutes: parseInt(process.env.SESSION_TTL_MINUTES || '30', 10)
+  },
+
   rateLimit: {
     perMinute: parseInt(process.env.RATE_LIMIT_PER_MINUTE || '10', 10)
   },

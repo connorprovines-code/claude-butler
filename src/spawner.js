@@ -29,13 +29,14 @@ function getQueueStatus() {
 }
 
 // ──── Spawn a Claude CLI agent ────
-// Returns { success, output, error, duration }
+// Returns { success, output, error, duration, sessionId }
 async function spawnAgent(prompt, options = {}) {
   const {
     cwd = config.agents.defaultCwd,
     maxTurns = 25,
     onProgress = null, // callback for streaming updates
-    model = null       // optional model override
+    model = null,      // optional model override
+    resume = null      // session ID to resume
   } = options;
 
   const agentId = `agent_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -50,17 +51,22 @@ async function spawnAgent(prompt, options = {}) {
       cwd
     });
 
-    logger.info(`Agent ${agentId} started`, { prompt: prompt.slice(0, 100), cwd });
+    logger.info(`Agent ${agentId} started`, {
+      prompt: prompt.slice(0, 100),
+      cwd,
+      resume: resume ? resume.slice(0, 12) : null
+    });
 
     try {
-      const result = await runClaude(agentId, prompt, { cwd, maxTurns, onProgress, model });
+      const result = await runClaude(agentId, prompt, { cwd, maxTurns, onProgress, model, resume });
       const duration = Math.round((Date.now() - startTime) / 1000);
 
       logger.info(`Agent ${agentId} completed in ${duration}s`, {
-        outputLength: result.length
+        outputLength: result.output.length,
+        sessionId: result.sessionId?.slice(0, 12)
       });
 
-      return { success: true, output: result, duration, agentId };
+      return { success: true, output: result.output, duration, agentId, sessionId: result.sessionId };
     } catch (err) {
       const duration = Math.round((Date.now() - startTime) / 1000);
 
@@ -71,7 +77,8 @@ async function spawnAgent(prompt, options = {}) {
         output: null,
         error: err.message,
         duration,
-        agentId
+        agentId,
+        sessionId: null
       };
     } finally {
       activeAgents.delete(agentId);
@@ -80,12 +87,17 @@ async function spawnAgent(prompt, options = {}) {
 }
 
 // ──── Low-level Claude CLI runner ────
-function runClaude(agentId, prompt, { cwd, maxTurns, onProgress, model }) {
+// Returns { output, sessionId }
+function runClaude(agentId, prompt, { cwd, maxTurns, onProgress, model, resume }) {
   return new Promise((resolve, reject) => {
-    const args = ['--print', '--max-turns', String(maxTurns)];
+    const args = ['--print', '--max-turns', String(maxTurns), '--output-format', 'json'];
 
     if (model) {
       args.push('--model', model);
+    }
+
+    if (resume) {
+      args.push('--resume', resume);
     }
 
     args.push('-p', prompt);
@@ -93,7 +105,7 @@ function runClaude(agentId, prompt, { cwd, maxTurns, onProgress, model }) {
     const proc = spawn(config.agents.claudeCliPath, args, {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
-      shell: true,
+      detached: true, // Create process group for clean kills
       env: { ...process.env }
     });
 
@@ -101,14 +113,22 @@ function runClaude(agentId, prompt, { cwd, maxTurns, onProgress, model }) {
     let stderr = '';
     let killed = false;
 
+    // Kill the entire process group (negative PID)
+    function killProcessGroup(signal) {
+      try {
+        process.kill(-proc.pid, signal);
+      } catch {
+        // Fallback to direct kill if group kill fails
+        try { proc.kill(signal); } catch {}
+      }
+    }
+
     // Timeout kill
     const timeout = setTimeout(() => {
       killed = true;
-      proc.kill('SIGTERM');
+      killProcessGroup('SIGTERM');
       // Force kill after 10s grace
-      setTimeout(() => {
-        try { proc.kill('SIGKILL'); } catch {}
-      }, 10_000);
+      setTimeout(() => killProcessGroup('SIGKILL'), 10_000);
     }, config.agents.timeoutSeconds * 1000);
 
     proc.stdout.on('data', (chunk) => {
@@ -123,9 +143,9 @@ function runClaude(agentId, prompt, { cwd, maxTurns, onProgress, model }) {
       // Safety: cap output at 100KB to prevent memory issues
       if (stdout.length > 100_000) {
         killed = true;
-        proc.kill('SIGTERM');
+        killProcessGroup('SIGTERM');
         clearTimeout(timeout);
-        resolve(stdout.slice(0, 100_000) + '\n\n[Output truncated at 100KB]');
+        resolve(parseResult(stdout.slice(0, 100_000) + '\n\n[Output truncated at 100KB]'));
       }
     });
 
@@ -142,7 +162,7 @@ function runClaude(agentId, prompt, { cwd, maxTurns, onProgress, model }) {
       clearTimeout(timeout);
 
       if (killed) {
-        resolve(stdout || `[Agent timed out after ${config.agents.timeoutSeconds}s]`);
+        resolve(parseResult(stdout || `[Agent timed out after ${config.agents.timeoutSeconds}s]`));
         return;
       }
 
@@ -152,9 +172,27 @@ function runClaude(agentId, prompt, { cwd, maxTurns, onProgress, model }) {
       }
 
       // Even with non-zero exit, if we got output, return it
-      resolve(stdout);
+      resolve(parseResult(stdout));
     });
   });
+}
+
+// ──── Parse JSON result from Claude CLI ────
+// Extracts the text output and session ID from --output-format json
+function parseResult(raw) {
+  try {
+    const json = JSON.parse(raw);
+    return {
+      output: json.result || raw,
+      sessionId: json.session_id || null
+    };
+  } catch {
+    // If JSON parsing fails (truncated output, timeout, etc.), return raw text
+    return {
+      output: raw,
+      sessionId: null
+    };
+  }
 }
 
 export { spawnAgent, getQueueStatus };

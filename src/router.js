@@ -3,6 +3,7 @@ import { findSkill, buildPrompt, listSkills } from './skills.js';
 import { listJobs } from './scheduler.js';
 import { getRateLimitInfo } from './auth.js';
 import { resolveModel } from './model-picker.js';
+import { getSession, saveSession, clearSession, getSessionInfo } from './sessions.js';
 import config from './config.js';
 import logger from './logger.js';
 
@@ -16,6 +17,14 @@ const BUILTINS = {
   '/cancel': handleCancel,
 };
 
+// ──── Session reset triggers ────
+const SESSION_RESET_PHRASES = ['new session', 'fresh start', 'reset session'];
+
+function isSessionReset(message) {
+  const lower = message.toLowerCase().trim();
+  return SESSION_RESET_PHRASES.some(phrase => lower === phrase);
+}
+
 // ──── Main Router ────
 // Takes a message string, returns { response, isAsync }
 async function route(message, { userId, sendFn }) {
@@ -28,6 +37,25 @@ async function route(message, { userId, sendFn }) {
     return { response, isAsync: false };
   }
 
+  // Check for session reset
+  if (isSessionReset(trimmed)) {
+    const had = getSessionInfo(userId);
+    clearSession(userId);
+    if (had) {
+      return {
+        response: `🔄 Session cleared (was active for ${had.idleFor}s). Next message starts fresh.`,
+        isAsync: false
+      };
+    }
+    return {
+      response: `🔄 No active session — next message starts fresh.`,
+      isAsync: false
+    };
+  }
+
+  // Look up active session for resume
+  const existingSessionId = getSession(userId);
+
   // Check for skill match
   const skill = findSkill(trimmed);
 
@@ -38,17 +66,24 @@ async function route(message, { userId, sendFn }) {
     const model = resolveModel(skill.model, trimmed);
 
     // Send "working" indicator
-    await sendFn(`⚡ *${skill.name}* — spawning agent (${model})...`);
+    const resumeTag = existingSessionId ? ' (resuming)' : '';
+    await sendFn(`⚡ *${skill.name}* — spawning agent (${model})${resumeTag}...`);
 
     const prompt = buildPrompt(skill, trimmed);
     const result = await spawnAgent(prompt, {
       cwd: skill.cwd,
       maxTurns: skill.maxTurns,
       model,
+      resume: existingSessionId,
       onProgress: async (agentId, snippet) => {
         // Optional: send progress dots for long tasks
       }
     });
+
+    // Save session for continuity
+    if (result.sessionId) {
+      saveSession(userId, result.sessionId);
+    }
 
     if (result.success) {
       return {
@@ -65,14 +100,21 @@ async function route(message, { userId, sendFn }) {
 
   // No skill match → treat as freeform prompt to Claude
   const freeformModel = resolveModel(null, trimmed);
-  logger.info('Freeform prompt', { message: trimmed.slice(0, 80), model: freeformModel });
-  await sendFn(`🧠 Thinking (${freeformModel})...`);
+  const resumeTag = existingSessionId ? ' (resuming)' : '';
+  logger.info('Freeform prompt', { message: trimmed.slice(0, 80), model: freeformModel, resume: !!existingSessionId });
+  await sendFn(`🧠 Thinking (${freeformModel})${resumeTag}...`);
 
   const result = await spawnAgent(trimmed, {
     cwd: config.agents.defaultCwd,
     maxTurns: 10, // Lower for freeform to keep it snappy
-    model: freeformModel
+    model: freeformModel,
+    resume: existingSessionId
   });
+
+  // Save session for continuity
+  if (result.sessionId) {
+    saveSession(userId, result.sessionId);
+  }
 
   if (result.success) {
     return {
@@ -98,9 +140,11 @@ async function handleHelp() {
   msg += `/skills — List available skills\n`;
   msg += `/jobs — List scheduled jobs\n`;
   msg += `/queue — Show agent queue\n\n`;
+  msg += `*Session:*\n`;
+  msg += `Say "new session" or "fresh start" to clear context and start over.\n\n`;
   msg += `*Usage:*\n`;
   msg += `Send any message to spawn a Claude agent.\n`;
-  msg += `Trigger words activate specific skills.\n\n`;
+  msg += `Follow-up messages within ${config.sessions?.ttlMinutes ?? 30} min resume the same conversation.\n\n`;
 
   if (skills.length > 0) {
     msg += `*Quick Skills:*\n`;
@@ -117,12 +161,19 @@ async function handleStatus(_, { userId }) {
   const queue = getQueueStatus();
   const rate = getRateLimitInfo(userId);
   const jobs = listJobs();
+  const session = getSessionInfo(userId);
 
   let msg = `📊 *Status*\n\n`;
   msg += `*Agents:* ${queue.active} active, ${queue.waiting} queued\n`;
   msg += `*Max concurrent:* ${queue.maxConcurrent}\n`;
   msg += `*Rate limit:* ${rate.remaining}/${config.rateLimit.perMinute} remaining\n`;
   msg += `*Scheduled jobs:* ${jobs.length}\n`;
+
+  if (session) {
+    msg += `\n*Session:* Active (idle ${session.idleFor}s)\n`;
+  } else {
+    msg += `\n*Session:* None (next message starts fresh)\n`;
+  }
 
   if (queue.agents.length > 0) {
     msg += `\n*Running:*\n`;
