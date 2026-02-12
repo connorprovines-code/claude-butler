@@ -2,14 +2,15 @@
 
 Personal AI butler you can text to run Claude agents, execute skills, deploy projects, check email, and more.
 
-Text a command to your Telegram bot → it spawns a Claude CLI agent → sends you the result.
+Text a command to your Telegram bot → it spawns a Claude CLI agent → sends you the result. Follow-up messages resume the same conversation within a configurable time window.
 
 ## Quick Start
 
 ```bash
 git clone https://github.com/YOUR_USER/claude-butler.git
 cd claude-butler
-npm run setup    # Interactive wizard - asks for your keys
+cp .env.example .env     # Fill in your Telegram token + user ID
+cp .mcp.json.example .mcp.json  # Optional: configure MCP servers
 npm install
 npm start
 ```
@@ -24,12 +25,40 @@ Then message your Telegram bot. That's it.
 
 ## Setup
 
-Run `npm run setup` and it will walk you through:
+### Required
 
 1. **Telegram Bot Token** - Message [@BotFather](https://t.me/BotFather) on Telegram, send `/newbot`
 2. **Your User ID** - Message [@userinfobot](https://t.me/userinfobot) to get your numeric ID
-3. **Agent settings** - Concurrency limits, timeouts, rate limits
-4. **Email** (optional) - Gmail address + App Password for email skills
+3. Copy `.env.example` to `.env` and fill in the values
+
+### Optional Integrations
+
+| Integration | Setup |
+|---|---|
+| **GitHub** | [Create a classic PAT](https://github.com/settings/tokens) with `repo` scope, set `GH_TOKEN` in `.env` |
+| **Gmail** | [Create an app password](https://myaccount.google.com/apppasswords), set `GMAIL_ADDRESS` and `GMAIL_APP_PASSWORD` |
+| **Notion** | [Create integration](https://www.notion.so/profile/integrations), configure `.mcp.json` (see `.mcp.json.example`) |
+| **Google Calendar** | Install gcalcli in a venv, run OAuth flow (see below) |
+
+#### Google Calendar Setup
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install gcalcli
+.venv/bin/gcalcli --client-id=YOUR_ID --client-secret=YOUR_SECRET list
+# Follow the browser OAuth flow, then set GCALCLI_* vars in .env
+```
+
+#### Notion MCP Setup
+
+```bash
+npm install -g @notionhq/notion-mcp-server
+cp .mcp.json.example .mcp.json
+# Edit .mcp.json with your NOTION_TOKEN
+# Use absolute path to notion-mcp-server binary for systemd compatibility
+```
+
+Remember to share pages/databases with your integration in Notion (... menu → Connections).
 
 ## Usage
 
@@ -38,10 +67,17 @@ Run `npm run setup` and it will walk you through:
 | Command | Description |
 |---------|-------------|
 | `/help` | Show help and available skills |
-| `/status` | System status, queue, rate limits |
+| `/status` | System status, queue, session info |
 | `/skills` | List all installed skills |
 | `/jobs` | List scheduled/recurring jobs |
 | `/queue` | Show running and queued agents |
+| `/new` | Kill current session, start fresh |
+
+### Session Management
+
+Messages within the TTL window (default 30 min) resume the same conversation — Claude remembers context from earlier messages. After the window expires, the next message starts a fresh session.
+
+Say **"new session"**, **"fresh start"**, **"reset session"**, or send `/new` to manually clear context.
 
 ### Freeform
 
@@ -49,8 +85,8 @@ Send any message and it spawns a Claude agent to handle it:
 
 ```
 "What's the weather like in NYC?"
-"Write me a bash script that backs up my database"
-"Explain the difference between TCP and UDP"
+"Create a new page in Notion called Project Ideas"
+"Check my email for anything from Jake"
 ```
 
 ### Skills
@@ -122,22 +158,28 @@ Telegram Message
 Auth + Rate Limit Check
     ↓
 Command Router
-    ├── Built-in command (/help, /status, etc.)
+    ├── Built-in command (/help, /status, /new, etc.)
+    ├── Session reset ("new session", "fresh start")
     ├── Skill match (keyword triggers)
     │   └── Model resolved (skill override or auto-detect)
     └── Freeform (auto model selection)
     ↓
+Session Lookup (resume existing or start fresh)
+    ↓
 Agent Queue (p-queue, max concurrent)
     ↓
-Claude CLI Spawn (claude --print -p "prompt")
+Claude CLI Spawn (claude --print --output-format json --resume <id>)
+    ↓
+Parse result + save session ID
     ↓
 Result sent back via Telegram
 ```
 
 ### Key Components
 
-- **Spawner** (`src/spawner.js`) - Manages a queue of Claude CLI processes with concurrency limits, timeouts, and output capping
-- **Router** (`src/router.js`) - Parses messages, matches skills, dispatches to agents
+- **Spawner** (`src/spawner.js`) - Manages a queue of Claude CLI processes with concurrency limits, timeouts, process group kills, and JSON output parsing
+- **Sessions** (`src/sessions.js`) - In-memory session store with configurable TTL for conversation continuity
+- **Router** (`src/router.js`) - Parses messages, matches skills, manages sessions, dispatches to agents
 - **Model Picker** (`src/model-picker.js`) - Auto-selects haiku/sonnet/opus based on task complexity
 - **Scheduler** (`src/scheduler.js`) - Cron-based recurring agent execution
 - **Auth** (`src/auth.js`) - User allowlist + sliding-window rate limiter
@@ -154,12 +196,22 @@ All config is via `.env` (see `.env.example`):
 | `MAX_CONCURRENT_AGENTS` | `2` | Max simultaneous Claude processes |
 | `RATE_LIMIT_PER_MINUTE` | `10` | Messages per user per minute |
 | `AGENT_TIMEOUT_SECONDS` | `300` | Kill agent after this many seconds |
+| `SESSION_TTL_MINUTES` | `30` | Session inactivity timeout |
 | `CLAUDE_CLI_PATH` | `claude` | Path to Claude CLI binary |
-| `DEFAULT_CWD` | project root | Default working directory for agents |
+| `GH_TOKEN` | - | GitHub Personal Access Token |
+| `GMAIL_ADDRESS` | - | Gmail address for email skills |
+| `GMAIL_APP_PASSWORD` | - | Gmail app password |
+| `NOTION_API_KEY` | - | Notion integration token |
+| `GCALCLI_PATH` | - | Path to gcalcli binary |
+| `GCALCLI_CLIENT_ID` | - | Google OAuth client ID |
+| `GCALCLI_CLIENT_SECRET` | - | Google OAuth client secret |
+
+MCP servers are configured in `.mcp.json` (see `.mcp.json.example`).
 
 ## Error Handling
 
-- **Agent timeouts**: Killed after configurable timeout, partial output returned
+- **Agent timeouts**: Process group killed after configurable timeout, partial output returned
+- **Process group kills**: Uses `kill(-pid)` to terminate the entire process tree, preventing orphans
 - **Output capping**: Truncated at 100KB to prevent memory issues
 - **Rate limiting**: Sliding window per-user, returns cooldown time
 - **Telegram message limits**: Auto-splits messages >4000 chars
@@ -170,26 +222,37 @@ All config is via `.env` (see `.env.example`):
 
 ## Running as a Service
 
-### systemd (Linux)
+### systemd (Linux, recommended)
+
+Create `~/.config/systemd/user/claude-butler.service`:
 
 ```ini
 [Unit]
-Description=Claude Butler
-After=network.target
+Description=Claude Butler - Personal AI Agent Dispatcher
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-User=your-user
 WorkingDirectory=/path/to/claude-butler
-ExecStart=/usr/bin/node src/index.js
+ExecStartPre=/path/to/claude-butler/scripts/update-claude-symlink.sh
+ExecStart=/path/to/node src/index.js
 Restart=always
 RestartSec=10
+Environment=PATH=/your/.local/bin:/path/to/node/bin:/usr/local/bin:/usr/bin:/bin
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
 ```
 
-### Windows (Task Scheduler or PM2)
+```bash
+systemctl --user daemon-reload
+systemctl --user enable claude-butler
+systemctl --user start claude-butler
+loginctl enable-linger $USER  # Keeps service running without active login
+```
+
+### PM2 (cross-platform)
 
 ```bash
 npm install -g pm2

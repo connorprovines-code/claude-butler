@@ -15,6 +15,7 @@ const BUILTINS = {
   '/jobs': handleJobs,
   '/queue': handleQueue,
   '/cancel': handleCancel,
+  '/new': handleNewSession,
 };
 
 // ──── Session reset triggers ────
@@ -106,7 +107,7 @@ async function route(message, { userId, sendFn }) {
 
   const result = await spawnAgent(trimmed, {
     cwd: config.agents.defaultCwd,
-    maxTurns: 10, // Lower for freeform to keep it snappy
+    maxTurns: 25, // Needs headroom for MCP tool calls
     model: freeformModel,
     resume: existingSessionId
   });
@@ -139,9 +140,8 @@ async function handleHelp() {
   msg += `/status — System status\n`;
   msg += `/skills — List available skills\n`;
   msg += `/jobs — List scheduled jobs\n`;
-  msg += `/queue — Show agent queue\n\n`;
-  msg += `*Session:*\n`;
-  msg += `Say "new session" or "fresh start" to clear context and start over.\n\n`;
+  msg += `/queue — Show agent queue\n`;
+  msg += `/new — Kill session, start fresh\n\n`;
   msg += `*Usage:*\n`;
   msg += `Send any message to spawn a Claude agent.\n`;
   msg += `Follow-up messages within ${config.sessions?.ttlMinutes ?? 30} min resume the same conversation.\n\n`;
@@ -244,6 +244,15 @@ async function handleCancel() {
   // This clears the waiting queue but can't kill running processes.
   const status = getQueueStatus();
   return `⚠️ Cancel not yet supported for running agents.\nQueue: ${status.active} active, ${status.waiting} waiting.`;
+}
+
+async function handleNewSession(_, { userId }) {
+  const had = getSessionInfo(userId);
+  clearSession(userId);
+  if (had) {
+    return `🔄 Session killed (was idle ${had.idleFor}s). Next message starts fresh.`;
+  }
+  return `🔄 No active session. Next message starts fresh.`;
 }
 
 function truncate(text, max) {

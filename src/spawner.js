@@ -1,4 +1,5 @@
 import { spawn } from 'child_process';
+import path from 'path';
 import PQueue from 'p-queue';
 import config from './config.js';
 import logger from './logger.js';
@@ -90,7 +91,13 @@ async function spawnAgent(prompt, options = {}) {
 // Returns { output, sessionId }
 function runClaude(agentId, prompt, { cwd, maxTurns, onProgress, model, resume }) {
   return new Promise((resolve, reject) => {
-    const args = ['--print', '--max-turns', String(maxTurns), '--output-format', 'json'];
+    const args = [
+      '--print',
+      '--max-turns', String(maxTurns),
+      '--output-format', 'json',
+      '--permission-mode', 'bypassPermissions',
+      '--mcp-config', path.join(config.paths.root, '.mcp.json')
+    ];
 
     if (model) {
       args.push('--model', model);
@@ -182,6 +189,16 @@ function runClaude(agentId, prompt, { cwd, maxTurns, onProgress, model, resume }
 function parseResult(raw) {
   try {
     const json = JSON.parse(raw);
+
+    // Handle error results (e.g. max turns exceeded)
+    if (json.is_error || json.subtype === 'error') {
+      const errorMsg = json.result || 'Agent encountered an error';
+      return {
+        output: `[Error] ${errorMsg}`,
+        sessionId: json.session_id || null
+      };
+    }
+
     return {
       output: json.result || raw,
       sessionId: json.session_id || null

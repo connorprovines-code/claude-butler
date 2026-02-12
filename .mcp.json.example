@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "notion": {
+      "command": "notion-mcp-server",
+      "args": [],
+      "env": {
+        "NOTION_TOKEN": "ntn_YOUR_NOTION_INTEGRATION_TOKEN"
+      }
+    }
+  }
+}
