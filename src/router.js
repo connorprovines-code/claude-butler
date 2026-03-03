@@ -1,6 +1,7 @@
 import { spawnAgent, getQueueStatus } from './spawner.js';
 import { findSkill, buildPrompt, listSkills } from './skills.js';
-import { listJobs } from './scheduler.js';
+import { listJobs, stopReminderJob } from './scheduler.js';
+import { getAll as getReminders, dismiss as dismissReminder } from './reminders.js';
 import { getRateLimitInfo } from './auth.js';
 import { resolveModel } from './model-picker.js';
 import { getSession, saveSession, clearSession, getSessionInfo } from './sessions.js';
@@ -16,6 +17,8 @@ const BUILTINS = {
   '/queue': handleQueue,
   '/cancel': handleCancel,
   '/new': handleNewSession,
+  '/reminders': handleReminders,
+  '/done': handleDone,
 };
 
 // ──── Session reset triggers ────
@@ -31,11 +34,16 @@ function isSessionReset(message) {
 async function route(message, { userId, sendFn }) {
   const trimmed = message.trim();
 
-  // Check built-in commands first
-  const cmd = trimmed.split(/\s/)[0].toLowerCase();
-  if (BUILTINS[cmd]) {
-    const response = await BUILTINS[cmd](trimmed, { userId });
-    return { response, isAsync: false };
+  // Check built-in commands — scan all tokens so commands work even mid-sentence
+  for (const token of trimmed.split(/\s+/)) {
+    if (!token.startsWith('/')) continue;
+    const cmd = token.toLowerCase();
+    if (BUILTINS[cmd]) {
+      // Slice from the command token so argument parsing (e.g. /done <id>) works correctly
+      const cmdMessage = trimmed.slice(trimmed.indexOf(token));
+      const response = await BUILTINS[cmd](cmdMessage, { userId });
+      return { response, isAsync: false };
+    }
   }
 
   // Check for session reset
@@ -108,7 +116,6 @@ async function route(message, { userId, sendFn }) {
 
   const result = await spawnAgent(trimmed, {
     cwd: config.agents.defaultCwd,
-    maxTurns: 25, // Needs headroom for MCP tool calls
     model: freeformModel,
     resume: existingSessionId,
     userId
@@ -143,6 +150,8 @@ async function handleHelp() {
   msg += `/skills — List available skills\n`;
   msg += `/jobs — List scheduled jobs\n`;
   msg += `/queue — Show agent queue\n`;
+  msg += `/reminders — List active reminders\n`;
+  msg += `/done <id> — Dismiss a reminder\n`;
   msg += `/new — Kill session, start fresh\n\n`;
   msg += `*Usage:*\n`;
   msg += `Send any message to spawn a Claude agent.\n`;
@@ -246,6 +255,30 @@ async function handleCancel() {
   // This clears the waiting queue but can't kill running processes.
   const status = getQueueStatus();
   return `⚠️ Cancel not yet supported for running agents.\nQueue: ${status.active} active, ${status.waiting} waiting.`;
+}
+
+async function handleReminders() {
+  const reminders = getReminders();
+  if (reminders.length === 0) return `No active reminders.`;
+
+  let msg = `⏰ *Active Reminders:*\n\n`;
+  for (const r of reminders) {
+    msg += `• \`${r.id}\` — ${r.message}\n`;
+    msg += `  Schedule: \`${r.cron}\`${r.once ? ' _(once)_' : ' _(repeating)_'}\n\n`;
+  }
+  msg += `Use \`/done <id>\` to dismiss a reminder.`;
+  return msg;
+}
+
+async function handleDone(message) {
+  const id = message.split(/\s+/)[1];
+  if (!id) return `Usage: /done <reminder-id>\nSee /reminders for IDs.`;
+
+  const dismissed = dismissReminder(id);
+  stopReminderJob(id);
+
+  if (dismissed) return `✅ Reminder \`${id}\` dismissed.`;
+  return `No reminder found with id \`${id}\`.`;
 }
 
 async function handleNewSession(_, { userId }) {

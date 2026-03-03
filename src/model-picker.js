@@ -35,6 +35,16 @@ const COMPLEX_PATTERNS = [
   /review\s+(the\s+)?(code|pr|pull)/i,
 ];
 
+// Explicit model requests — highest priority, user knows what they want
+const EXPLICIT_MODEL_PATTERNS = [
+  { pattern: /\b(use|run|spawn|fire\s+up|with)\s+opus\b/i, model: 'opus' },
+  { pattern: /\bopus\s+(run|mode|agent|up)\b/i, model: 'opus' },
+  { pattern: /\b(use|run|spawn|with)\s+sonnet\b/i, model: 'sonnet' },
+  { pattern: /\bsonnet\s+(run|mode|agent)\b/i, model: 'sonnet' },
+  { pattern: /\b(use|run|spawn|with)\s+haiku\b/i, model: 'haiku' },
+  { pattern: /\bhaiku\s+(run|mode|agent)\b/i, model: 'haiku' },
+];
+
 /**
  * Pick a model based on message content.
  * Returns a model string or null (to use CLI default).
@@ -46,6 +56,13 @@ const COMPLEX_PATTERNS = [
  * - "sonnet"      → balanced middle ground
  */
 function pickModel(message) {
+  // Explicit model request takes absolute priority
+  for (const { pattern, model } of EXPLICIT_MODEL_PATTERNS) {
+    if (pattern.test(message)) {
+      return model;
+    }
+  }
+
   // Check complex patterns first (they take priority)
   for (const pattern of COMPLEX_PATTERNS) {
     if (pattern.test(message)) {

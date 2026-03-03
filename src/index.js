@@ -2,8 +2,9 @@ import fs from 'fs';
 import config from './config.js';
 import logger from './logger.js';
 import { loadSkills } from './skills.js';
-import { startScheduledSkills, setSendCallback, stopAllJobs } from './scheduler.js';
+import { startScheduledSkills, startReminders, setSendCallback, stopAllJobs } from './scheduler.js';
 import { getOrphaned, clearAll } from './inflight.js';
+import { purgeOldEntries } from './interaction-log.js';
 import * as telegram from './channels/telegram.js';
 
 // ──── Ensure directories exist ────
@@ -26,6 +27,9 @@ async function main() {
   `);
 
   ensureDirs();
+
+  // Purge old interaction logs (>30 days)
+  purgeOldEntries();
 
   // Load skills
   loadSkills();
@@ -56,6 +60,9 @@ async function main() {
 
   // Start scheduled skills
   startScheduledSkills();
+
+  // Start reminders
+  startReminders();
 
   logger.info('Claude Butler is running', {
     allowedUsers: config.telegram.allowedUserIds.length,

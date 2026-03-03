@@ -4,13 +4,14 @@ import PQueue from 'p-queue';
 import config from './config.js';
 import logger from './logger.js';
 import { trackStart, trackEnd } from './inflight.js';
+import { logInteraction } from './interaction-log.js';
 
 // ──── Agent Queue ────
 // Limits concurrent Claude CLI processes to prevent overload
 const queue = new PQueue({
-  concurrency: config.agents.maxConcurrent,
-  timeout: config.agents.timeoutSeconds * 1000,
-  throwOnTimeout: true
+  concurrency: config.agents.maxConcurrent
+  // No queue-level timeout — runClaude handles its own timeout + process cleanup.
+  // PQueue timeout rejects the promise but can't kill the child process, leaving orphans.
 });
 
 // Track active agents for status reporting
@@ -32,15 +33,28 @@ function getQueueStatus() {
 
 // ──── Spawn a Claude CLI agent ────
 // Returns { success, output, error, duration, sessionId }
+// Model-aware defaults — opus needs more headroom for complex multi-step tasks
+const MODEL_DEFAULTS = {
+  opus:   { maxTurns: 50, timeoutSeconds: 900 },
+  sonnet: { maxTurns: 30, timeoutSeconds: 600 },
+  haiku:  { maxTurns: 15, timeoutSeconds: 180 },
+};
+
 async function spawnAgent(prompt, options = {}) {
   const {
     cwd = config.agents.defaultCwd,
-    maxTurns = 25,
+    maxTurns: explicitMaxTurns = null,
     onProgress = null, // callback for streaming updates
     model = null,      // optional model override
     resume = null,     // session ID to resume
     userId = null      // for crash recovery tracking
   } = options;
+
+  // Resolve model-aware defaults, with explicit overrides taking priority
+  const modelKey = model || 'sonnet';
+  const defaults = MODEL_DEFAULTS[modelKey] || MODEL_DEFAULTS.sonnet;
+  const maxTurns = explicitMaxTurns || defaults.maxTurns;
+  const timeoutSeconds = defaults.timeoutSeconds;
 
   const agentId = `agent_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
@@ -59,11 +73,14 @@ async function spawnAgent(prompt, options = {}) {
     logger.info(`Agent ${agentId} started`, {
       prompt: prompt.slice(0, 100),
       cwd,
+      model: modelKey,
+      maxTurns,
+      timeoutSeconds,
       resume: resume ? resume.slice(0, 12) : null
     });
 
     try {
-      const result = await runClaude(agentId, prompt, { cwd, maxTurns, onProgress, model, resume });
+      const result = await runClaude(agentId, prompt, { cwd, maxTurns, onProgress, model, resume, timeoutSeconds });
       const duration = Math.round((Date.now() - startTime) / 1000);
 
       logger.info(`Agent ${agentId} completed in ${duration}s`, {
@@ -71,11 +88,21 @@ async function spawnAgent(prompt, options = {}) {
         sessionId: result.sessionId?.slice(0, 12)
       });
 
+      logInteraction({
+        agentId, prompt, model: modelKey, duration, success: true,
+        outputSnippet: result.output
+      });
+
       return { success: true, output: result.output, duration, agentId, sessionId: result.sessionId };
     } catch (err) {
       const duration = Math.round((Date.now() - startTime) / 1000);
 
       logger.error(`Agent ${agentId} failed after ${duration}s`, { error: err.message });
+
+      logInteraction({
+        agentId, prompt, model: modelKey, duration, success: false,
+        error: err.message
+      });
 
       return {
         success: false,
@@ -94,7 +121,7 @@ async function spawnAgent(prompt, options = {}) {
 
 // ──── Low-level Claude CLI runner ────
 // Returns { output, sessionId }
-function runClaude(agentId, prompt, { cwd, maxTurns, onProgress, model, resume }) {
+function runClaude(agentId, prompt, { cwd, maxTurns, onProgress, model, resume, timeoutSeconds }) {
   return new Promise((resolve, reject) => {
     const args = [
       '--print',
@@ -135,13 +162,14 @@ function runClaude(agentId, prompt, { cwd, maxTurns, onProgress, model, resume }
       }
     }
 
-    // Timeout kill
+    // Timeout kill — uses model-aware timeout, not global config
     const timeout = setTimeout(() => {
       killed = true;
+      logger.warn(`Agent ${agentId} timed out after ${timeoutSeconds}s, killing`);
       killProcessGroup('SIGTERM');
       // Force kill after 10s grace
       setTimeout(() => killProcessGroup('SIGKILL'), 10_000);
-    }, config.agents.timeoutSeconds * 1000);
+    }, timeoutSeconds * 1000);
 
     proc.stdout.on('data', (chunk) => {
       const text = chunk.toString();
@@ -174,7 +202,7 @@ function runClaude(agentId, prompt, { cwd, maxTurns, onProgress, model, resume }
       clearTimeout(timeout);
 
       if (killed) {
-        resolve(parseResult(stdout || `[Agent timed out after ${config.agents.timeoutSeconds}s]`));
+        resolve(parseResult(stdout || `[Agent timed out after ${timeoutSeconds}s]`));
         return;
       }
 
@@ -196,8 +224,10 @@ function parseResult(raw) {
     const json = JSON.parse(raw);
 
     // Handle error results (e.g. max turns exceeded)
-    if (json.is_error || json.subtype === 'error') {
-      const errorMsg = json.result || 'Agent encountered an error';
+    if (json.is_error || json.subtype?.startsWith('error')) {
+      const errorMsg = json.subtype === 'error_max_turns'
+        ? 'Agent hit the turn limit — try a simpler or shorter request.'
+        : (json.result || 'Agent encountered an error');
       return {
         output: `[Error] ${errorMsg}`,
         sessionId: json.session_id || null
