@@ -76,6 +76,7 @@ async function route(message, { userId, sendFn }) {
       maxTurns: skill.maxTurns,
       model,
       resume: existingSessionId,
+      userId,
       onProgress: async (agentId, snippet) => {
         // Optional: send progress dots for long tasks
       }
@@ -109,7 +110,8 @@ async function route(message, { userId, sendFn }) {
     cwd: config.agents.defaultCwd,
     maxTurns: 25, // Needs headroom for MCP tool calls
     model: freeformModel,
-    resume: existingSessionId
+    resume: existingSessionId,
+    userId
   });
 
   // Save session for continuity

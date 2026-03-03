@@ -3,6 +3,7 @@ import config from './config.js';
 import logger from './logger.js';
 import { loadSkills } from './skills.js';
 import { startScheduledSkills, setSendCallback, stopAllJobs } from './scheduler.js';
+import { getOrphaned, clearAll } from './inflight.js';
 import * as telegram from './channels/telegram.js';
 
 // ──── Ensure directories exist ────
@@ -33,7 +34,25 @@ async function main() {
   const bot = telegram.start();
 
   // Wire scheduler to send messages to owner
-  setSendCallback(telegram.getSendToOwner());
+  const sendToOwner = telegram.getSendToOwner();
+  setSendCallback(sendToOwner);
+
+  // Notify about any tasks that were interrupted by a crash/restart
+  const orphans = getOrphaned();
+  if (orphans.length > 0) {
+    logger.warn(`Found ${orphans.length} orphaned task(s) from previous run`);
+    clearAll();
+    for (const task of orphans) {
+      const age = Math.round((Date.now() - task.startedAt) / 1000);
+      try {
+        await sendToOwner(
+          `⚠️ *Task interrupted* — the service restarted while an agent was running (${age}s in).\n\n_Prompt: "${task.prompt}"_\n\nPlease resend if you still need this.`
+        );
+      } catch (err) {
+        logger.error('Failed to send orphan notification', { error: err.message });
+      }
+    }
+  }
 
   // Start scheduled skills
   startScheduledSkills();

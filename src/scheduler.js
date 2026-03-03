@@ -46,14 +46,19 @@ function startScheduledSkills() {
 
         if (sendCallback) {
           if (result.success) {
+            logger.info(`Sending scheduled result for ${skill.name}`, { outputLength: result.output.length });
             await sendCallback(`✅ *${skill.name}* completed:\n\n${truncate(result.output, 3500)}`);
           } else {
+            logger.info(`Sending scheduled failure for ${skill.name}`, { error: result.error });
             await sendCallback(`❌ *${skill.name}* failed: ${result.error}`);
           }
+        } else {
+          logger.warn(`No sendCallback set for scheduled skill ${skill.name}`);
         }
       } catch (err) {
         logger.error(`Scheduled skill ${skill.name} error`, { error: err.message });
         if (sendCallback) {
+          logger.info(`Sending scheduled error for ${skill.name}`);
           await sendCallback(`❌ *${skill.name}* error: ${err.message}`);
         }
       }

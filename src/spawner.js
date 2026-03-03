@@ -3,6 +3,7 @@ import path from 'path';
 import PQueue from 'p-queue';
 import config from './config.js';
 import logger from './logger.js';
+import { trackStart, trackEnd } from './inflight.js';
 
 // ──── Agent Queue ────
 // Limits concurrent Claude CLI processes to prevent overload
@@ -37,7 +38,8 @@ async function spawnAgent(prompt, options = {}) {
     maxTurns = 25,
     onProgress = null, // callback for streaming updates
     model = null,      // optional model override
-    resume = null      // session ID to resume
+    resume = null,     // session ID to resume
+    userId = null      // for crash recovery tracking
   } = options;
 
   const agentId = `agent_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -51,6 +53,8 @@ async function spawnAgent(prompt, options = {}) {
       startedAt: startTime,
       cwd
     });
+
+    if (userId) trackStart(agentId, userId, prompt);
 
     logger.info(`Agent ${agentId} started`, {
       prompt: prompt.slice(0, 100),
@@ -83,6 +87,7 @@ async function spawnAgent(prompt, options = {}) {
       };
     } finally {
       activeAgents.delete(agentId);
+      if (userId) trackEnd(agentId);
     }
   });
 }
